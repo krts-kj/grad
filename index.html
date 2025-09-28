@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Twin-Gladius — Mobile Shoot 'em up</title>
+<style>
+  :root{--bg:#041022;--panel:rgba(0,0,0,0.45);--accent:#ffd86b}
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Hiragino Kaku Gothic ProN',Meiryo,sans-serif;background:var(--bg);color:#fff}
+  #wrap{max-width:1100px;margin:0 auto;padding:10px;display:flex;flex-direction:column;gap:8px}
+  header{display:flex;justify-content:space-between;align-items:center}
+  h1{font-size:18px;margin:0}
+  .controlsRow{display:flex;gap:8px;align-items:center}
+  .btn{background:var(--panel);padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.03);cursor:pointer}
+  #gameWrap{width:100%;aspect-ratio:9/16;max-height:88vh;background:linear-gradient(180deg,#041022 0%,#00111a 100%);border-radius:12px;position:relative;overflow:hidden}
+  canvas{width:100%;height:100%;display:block}
+  #hud{position:absolute;left:8px;top:8px;display:flex;gap:10px;align-items:center;z-index:20}
+  #hud .panel{background:var(--panel);padding:6px 8px;border-radius:8px;font-size:13px}
+  #touchControls{position:absolute;right:8px;bottom:8px;display:flex;gap:8px;align-items:center;z-index:30}
+  .touchBtn{width:64px;height:64px;border-radius:14px;background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;font-weight:700;user-select:none}
+  .stick{position:absolute;left:12px;bottom:12px;width:160px;height:160px;border-radius:50%;background:rgba(255,255,255,0.03);display:flex;align-items:center;justify-content:center;touch-action:none}
+  .stick .knob{width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,0.06);display:block}
+  /* smaller on large screens */
+  @media(min-width:900px){ #gameWrap{aspect-ratio:16/9} .stick{width:200px;height:200px} }
+  /* help overlay */
+  #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:40}
+  #menu{background:rgba(0,0,0,0.7);padding:18px;border-radius:12px;text-align:center;width:min(420px,92%)}
+  #menu h2{margin:0 0 8px}
+  #powerMeter{width:240px;height:18px;background:rgba(255,255,255,0.06);border-radius:9px;overflow:hidden}
+  #powerFill{height:100%;width:0;background:linear-gradient(90deg,#7ef9ff,#ffd86b)}
+  .small{font-size:13px;color:#ddd}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <h1>Twin-Gladius — TwinBee x Gradius inspired</h1>
+    <div class="controlsRow">
+      <div class="btn" id="startBtn">Start</div>
+      <div class="btn" id="pauseBtn">Pause</div>
+      <div class="btn" id="soundBtn">🔊</div>
+    </div>
+  </header>
+
+  <div id="gameWrap">
+    <canvas id="c"></canvas>
+
+    <div id="hud">
+      <div class="panel">Score: <span id="score">0</span></div>
+      <div class="panel">Lives: <span id="lives">3</span></div>
+      <div class="panel" style="display:flex;align-items:center;gap:8px">Power:
+        <div id="powerMeter"><div id="powerFill"></div></div>
+      </div>
+    </div>
+
+    <div id="overlay">
+      <div id="menu">
+        <h2>Twin-Gladius</h2>
+        <div class="small">左右で移動、上でブースト、弾を拾って強化。ベル風パワーとパワーメーター（右端のボタンで発動）を組み合わせたシステム。</div>
+        <div style="margin-top:10px;display:flex;gap:8px;justify-content:center">
+          <div class="btn" id="play">Play</div>
+          <div class="btn" id="how">How</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- touch controls -->
+    <div class="stick" id="stick" aria-hidden="true"><div class="knob" id="knob"></div></div>
+    <div id="touchControls">
+      <div class="touchBtn" id="shootBtn">SHOOT</div>
+      <div class="touchBtn" id="powerBtn">POWER</div>
+    </div>
+  </div>
+
+  <footer style="font-size:13px;color:#bbb;margin-top:4px">Tip: On desktop use arrow keys/z/x. On mobile use the left stick and the buttons on right.</footer>
+</div>
+
+<script>
+(() => {
+  // Canvas setup
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.floor(rect.width * devicePixelRatio);
+    canvas.height = Math.floor(rect.height * devicePixelRatio);
+    ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // DOM
+  const startBtn = document.getElementById('startBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const soundBtn = document.getElementById('soundBtn');
+  const overlay = document.getElementById('overlay');
+  const play = document.getElementById('play');
+  const how = document.getElementById('how');
+  const scoreEl = document.getElementById('score');
+  const livesEl = document.getElementById('lives');
+  const powerFill = document.getElementById('powerFill');
+
+  // Touch controls
+  const stick = document.getElementById('stick');
+  const knob = document.getElementById('knob');
+  const shootBtn = document.getElementById('shootBtn');
+  const powerBtn = document.getElementById('powerBtn');
+
+  let soundOn = true;
+  soundBtn.addEventListener('click', ()=>{ soundOn = !soundOn; soundBtn.textContent = soundOn ? '🔊' : '🔈'; });
+
+  // Game state
+  let W = canvas.clientWidth, H = canvas.clientHeight;
+  function syncWH(){ W = canvas.clientWidth; H = canvas.clientHeight; }
+  window.addEventListener('resize', syncWH);
+
+  let running = false, paused = false;
+  let last = 0;
+
+  // Player
+  const player = {x:0,y:0,w:36,h:20,spd:180, vx:0,vy:0,shotCooldown:0, optionSlots:[]};
+
+  // Entities
+  let bullets = []; // player bullets
+  let enemyBullets = [];
+  let enemies = [];
+  let pickups = [];
+  let particles = [];
+
+  // Scoring & lives
+  let score = 0, lives = 3;
+  let high = parseInt(localStorage.getItem('twingladius_high')||'0',10);
+
+  // Power meter (Gradius-like)
+  const POWER_MAX = 8;
+  let power = 0;
+  function addPower(n=1){ power = Math.min(POWER_MAX, power + n); updatePowerUI(); }
+  function usePower(){ if(power>=1){ // activate last power (simple)
+      // implement simple power choices: 1: Speed, 2: Double, 3: Option (satellite), 4: Laser
+      // For simplicity, cycle through fixed list based on power level
+      const choice = power; power = 0; updatePowerUI(); activatePower(choice);
+    } }
+  function updatePowerUI(){ powerFill.style.width = (power/POWER_MAX*100) + '%'; }
+
+  // TwinBee-like bell: changes form
+  // types: 0=white (score),1=blue (speed up),2=green (shield/option),3=red (weapon up)
+  function spawnBell(x,y){ pickups.push({type:'bell',bellType:Math.floor(Math.random()*4),x,y,vy:50}); }
+
+  // Controls input
+  const keys = {};
+  window.addEventListener('keydown', e=>{ keys[e.key.toLowerCase()] = true; if(['z','x',' '].includes(e.key.toLowerCase())) e.preventDefault(); });
+  window.addEventListener('keyup', e=>{ keys[e.key.toLowerCase()] = false; });
+
+  // Touch stick handling
+  let touchId = null; let stickCenter = null; let knobPos = {x:0,y:0};
+  function initStick(){ const r = stick.getBoundingClientRect(); stickCenter = {x: r.left + r.width/2, y: r.top + r.height/2}; }
+  initStick(); window.addEventListener('resize', initStick);
+
+  function setKnob(dx,dy){ const max = (stick.clientWidth/2)-20; const dist = Math.hypot(dx,dy); let nx=dx, ny=dy; if(dist>max){ nx = dx/dist*max; ny = dy/dist*max; } knob.style.transform = `translate(${nx}px,${ny}px)`; knobPos.x = nx/(max||1); knobPos.y = ny/(max||1); }
+  function resetKnob(){ knob.style.transform='translate(0,0)'; knobPos={x:0,y:0}; }
+
+  stick.addEventListener('touchstart', e=>{ e.preventDefault(); const t=e.changedTouches[0]; touchId = t.identifier; initStick(); const dx = t.clientX - stickCenter.x; const dy = t.clientY - stickCenter.y; setKnob(dx,dy); }, {passive:false});
+  stick.addEventListener('touchmove', e=>{ e.preventDefault(); for(const t of e.changedTouches){ if(t.identifier===touchId){ const dx = t.clientX - stickCenter.x; const dy = t.clientY - stickCenter.y; setKnob(dx,dy); } } }, {passive:false});
+  stick.addEventListener('touchend', e=>{ e.preventDefault(); for(const t of e.changedTouches){ if(t.identifier===touchId){ touchId = null; resetKnob(); } } }, {passive:false});
+
+  // touch buttons
+  let touchShoot=false, touchPower=false;
+  shootBtn.addEventListener('touchstart', e=>{ e.preventDefault(); touchShoot=true; }, {passive:false});
+  shootBtn.addEventListener('touchend', e=>{ e.preventDefault(); touchShoot=false; }, {passive:false});
+  powerBtn.addEventListener('touchstart', e=>{ e.preventDefault(); touchPower=true; usePower(); }, {passive:false});
+  powerBtn.addEventListener('touchend', e=>{ e.preventDefault(); touchPower=false; }, {passive:false});
+
+  // Desktop click buttons
+  shootBtn.addEventListener('mousedown', ()=>{ touchShoot=true }); shootBtn.addEventListener('mouseup', ()=>{ touchShoot=false });
+  powerBtn.addEventListener('click', ()=>{ usePower(); });
+
+  // Start/pause
+  play.addEventListener('click', ()=>{ startGame(); overlay.style.display='none'; });
+  startBtn.addEventListener('click', ()=>{ if(!running) startGame(); });
+  pauseBtn.addEventListener('click', ()=>{ paused = !paused; pauseBtn.textContent = paused ? 'Resume' : 'Pause'; });
+
+  // Game functions
+  function startGame(){ // reset
+    running = true; paused = false; score = 0; lives = 3; power = 0;
+    bullets = []; enemyBullets=[]; enemies=[]; pickups=[]; particles=[]; player.optionSlots=[]; player.x = W/2; player.y = H - 100;
+    last = performance.now()/1000; spawnWaveTimer = 0; wave=0; updateUI(); updatePowerUI(); }
+
+  function endGame(){ running = false; overlay.style.display='flex'; document.getElementById('menu').querySelector('h2').innerText = 'Game Over'; if(score>high){ localStorage.setItem('twingladius_high',String(score)); high=score; } }
+
+  function updateUI(){ scoreEl.textContent = score; livesEl.textContent = lives; }
+
+  // Shooting
+  function playerShoot(){ if(player.shotCooldown<=0){ const baseSpeed = -420; const bullet = {x:player.x + player.w/2 - 4, y:player.y - 8, w:8,h:12,vy:baseSpeed}; bullets.push(bullet); player.shotCooldown = 0.18; // fast
+      // option satellites fire
+      for(const opt of player.optionSlots){ bullets.push({x: opt.x, y: opt.y, w:6,h:8, vy: baseSpeed-40}); }
+      if(soundOn) beep(1200,0.04);
+    } }
+
+  // Options: simple satellites that follow and shoot
+  function addOption(){ if(player.optionSlots.length<2){ player.optionSlots.push({x:player.x, y:player.y}); } }
+
+  // Activate special power
+  function activatePower(level){ // simple mapping
+    if(soundOn) beep(600,0.06);
+    if(level<=1){ // speed boost
+      player.spd *= 1.4; setTimeout(()=>{ player.spd /= 1.4; }, 4000);
+    } else if(level<=3){ // double shot
+      for(let i=0;i<40;i++) particles.push({x:player.x + player.w/2, y:player.y, vx:(Math.random()-0.5)*120, vy:-Math.random()*160 - 80, life:0.6});
+      // temporary double shot
+      const orig = player.shotCooldown; player.shotCooldown = Math.max(0.08, orig*0.6); setTimeout(()=>{ player.shotCooldown = orig; }, 5000);
+    } else if(level<=5){ // option
+      addOption(); addOption();
+    } else { // laser: clears screen
+      for(let e of enemies){ e.hp -= 3; }
+    }
+  }
+
+  // Enemy spawn waves
+  let spawnWaveTimer = 0, wave = 0;
+  function spawnEnemyWave(){ wave++; const cnt = 4 + Math.min(6, Math.floor(wave/2)); for(let i=0;i<cnt;i++){ const e = {x: Math.random()*(W-36), y: -40 - Math.random()*200, w:36,h:22, vy: 30 + Math.random()*80, hp: 1 + Math.floor(wave/3)}; enemies.push(e); }
+    // chance to spawn bells
+    if(Math.random()<0.6){ spawnBell(Math.random()*(W-40)+20, -20); }
+  }
+
+  function spawnBell(x,y){ pickups.push({type:'bell',x,y,w:18,h:18,vy:45, bellType: Math.floor(Math.random()*4)}); }
+
+  // Update loop
+  function update(dt){
+    if(!running || paused) return;
+    // input
+    let mvx = 0, mvy = 0;
+    if(keys['arrowleft']||keys['a']) mvx -= 1; if(keys['arrowright']||keys['d']) mvx += 1;
+    if(keys['arrowup']||keys['w']) mvy -= 1; if(keys['arrowdown']||keys['s']) mvy += 1;
+    // touch stick influence
+    if(Math.abs(knobPos.x)>0.02 || Math.abs(knobPos.y)>0.02){ mvx += knobPos.x; mvy += knobPos.y; }
+
+    // normalize
+    const mag = Math.hypot(mvx,mvy); if(mag>1){ mvx/=mag; mvy/=mag; }
+    player.vx = mvx * player.spd; player.vy = mvy * player.spd;
+    player.x += player.vx * dt; player.y += player.vy * dt;
+    // bounds
+    player.x = Math.max(6, Math.min(W - player.w - 6, player.x)); player.y = Math.max(6, Math.min(H - player.h - 60, player.y));
+
+    // options follow
+    for(let i=0;i<player.optionSlots.length;i++){ const opt = player.optionSlots[i]; const tx = player.x + (i===0? -40: +40); const ty = player.y; opt.x += (tx - opt.x) * (5*dt); opt.y += (ty - opt.y) * (5*dt); }
+
+    // shooting
+    player.shotCooldown -= dt;
+    const wantShoot = keys['z'] || keys[' '] || keys['x'] || touchShoot;
+    if(wantShoot) playerShoot();
+
+    // update bullets
+    for(let i=bullets.length-1;i>=0;i--){ const b=bullets[i]; b.y += b.vy*dt; if(b.y + b.h < 0) bullets.splice(i,1); }
+    for(let i=enemyBullets.length-1;i>=0;i--){ const b=enemyBullets[i]; b.y += b.vy*dt; if(b.y > H) enemyBullets.splice(i,1); }
+
+    // enemies
+    for(let i=enemies.length-1;i>=0;i--){ const e=enemies[i]; e.y += e.vy*dt; // simple AI
+      if(Math.random()<0.002){ // enemy shoots
+        enemyBullets.push({x:e.x + e.w/2 - 3, y:e.y + e.h, w:6,h:10, vy:120});
+      }
+      if(e.y > H + 40){ enemies.splice(i,1); continue; }
+      // collision with bullets
+      for(let j=bullets.length-1;j>=0;j--){ const b=bullets[j]; if(rectsOverlap(b,e)){ bullets.splice(j,1); e.hp -= 1; if(e.hp<=0){ explode(e.x+e.w/2,e.y+e.h/2,12); score += 10 + Math.floor(Math.random()*8); // chance drop
+                if(Math.random()<0.25) spawnBell(e.x, e.y);
+                enemies.splice(i,1); break; } } }
+      // collision with player
+      if(rectsOverlap(e, player)){ explode(player.x+player.w/2, player.y+player.h/2,18); enemies.splice(i,1); loseLife(); }
+    }
+
+    // pickups
+    for(let i=pickups.length-1;i>=0;i--){ const p=pickups[i]; p.y += p.vy*dt; if(p.y > H+20) pickups.splice(i,1); if(rectsOverlap(p,player)){
+        // bell effect
+        if(p.bellType===0) score += 50; else if(p.bellType===1) player.spd *= 1.12, setTimeout(()=>{ player.spd /= 1.12; }, 6000);
+        else if(p.bellType===2) addOption(); else if(p.bellType===3) addPower(2);
+        pickups.splice(i,1);
+        if(soundOn) beep(800,0.05);
+      } }
+
+    // enemy bullets -> player collision
+    for(let i=enemyBullets.length-1;i>=0;i--){ const b=enemyBullets[i]; if(rectsOverlap(b,player)){ enemyBullets.splice(i,1); explode(player.x+player.w/2,player.y+player.h/2,10); loseLife(); } }
+
+    // particles
+    for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.life -= dt; p.x += p.vx*dt; p.y += p.vy*dt; if(p.life<=0) particles.splice(i,1); }
+
+    // spawn waves
+    spawnWaveTimer += dt; if(spawnWaveTimer > 3 - Math.min(2.2, wave*0.05)){ spawnWaveTimer = 0; spawnEnemyWave(); }
+
+    updateUI();
+  }
+
+  function rectsOverlap(a,b){ return a.x < b.x + b.w && a.x + (a.w||10) > b.x && a.y < b.y + b.h && a.y + (a.h||10) > b.y; }
+
+  function loseLife(){ lives -= 1; if(lives<=0){ endGame(); } else { // invuln effect
+      player.x = W/2; player.y = H - 120; particles.push({x:player.x,y:player.y,vx:0,vy:-60,life:0.6}); if(soundOn) beep(200,0.1);
+    } }
+
+  function explode(x,y,count){ for(let i=0;i<count;i++){ particles.push({x:x + (Math.random()-0.5)*30, y:y + (Math.random()-0.5)*30, vx:(Math.random()-0.5)*200, vy:(Math.random()-0.5)*200, life:0.6 + Math.random()*0.6, size:2+Math.random()*4}); } }
+
+  // Draw
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    // starfield background
+    for(let i=0;i<60;i++){ const sx = ((i*73) + (Date.now()/10)) % W; const sy = (i*97) % H; ctx.fillStyle = 'rgba(255,255,255,0.03)'; ctx.fillRect(sx,sy,1,1); }
+
+    // player
+    ctx.save(); ctx.translate(player.x,player.y);
+    // ship hull
+    roundRect(ctx,0,0,player.w,player.h,6, true, false);
+    ctx.fillStyle = '#7ef9ff'; ctx.fill();
+    // cockpit
+    ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(player.w/2-6,4,12,8);
+    ctx.restore();
+
+    // options
+    for(const opt of player.optionSlots){ ctx.fillStyle='#ffd86b'; ctx.fillRect(opt.x-6,opt.y-6,12,12); }
+
+    // bullets
+    ctx.fillStyle='#ffd86b'; for(const b of bullets){ ctx.fillRect(b.x,b.y,b.w,b.h); }
+    ctx.fillStyle='#ff7b7b'; for(const b of enemyBullets){ ctx.fillRect(b.x,b.y,b.w,b.h); }
+
+    // enemies
+    for(const e of enemies){ ctx.fillStyle='#ff6b6b'; roundRect(ctx, e.x, e.y, e.w, e.h, 6, true, false); ctx.fill(); }
+
+    // pickups
+    for(const p of pickups){ if(p.type==='bell'){ // color
+        const colors = ['#fff','#7ef9ff','#b7ff7a','#ff8b6b']; ctx.fillStyle = colors[p.bellType%colors.length]; ctx.beginPath(); ctx.ellipse(p.x,p.y,9,9,0,0,Math.PI*2); ctx.fill(); ctx.fillStyle='rgba(0,0,0,0.15)'; ctx.fillRect(p.x-4,p.y-2,8,4);
+      } }
+
+    // particles
+    for(const p of particles){ ctx.globalAlpha = Math.max(0, p.life); ctx.fillStyle = 'rgba(255,230,150,0.9)'; const s = p.size||3; ctx.fillRect(p.x-s/2,p.y-s/2,s,s); ctx.globalAlpha=1; }
+
+    // HUD hints
+    if(!running){ ctx.fillStyle='rgba(255,255,255,0.05)'; ctx.fillRect(0,H-48,W,48); ctx.fillStyle='#fff'; ctx.font='14px sans-serif'; ctx.fillText('Press Play to start — Desktop: ←→ 移動 Z/X 発射',12,H-20); }
+  }
+
+  function roundRect(ctx,x,y,w,h,r, fill, stroke){ if(typeof r==='undefined') r=5; ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+  // Sound: simple beep using WebAudio
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  function beep(freq,duration){ if(!soundOn) return; try{ const o = audioCtx.createOscillator(); const g = audioCtx.createGain(); o.type='sine'; o.frequency.value = freq; g.gain.value = 0.02; o.connect(g); g.connect(audioCtx.destination); o.start(); g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration); o.stop(audioCtx.currentTime + duration + 0.02); }catch(e){}
+  }
+
+  // Main loop
+  function loop(ts){ if(!running){ draw(); requestAnimationFrame(loop); return; } const t = ts/1000; let dt = Math.min(0.05, t - last); last = t; update(dt); draw(); requestAnimationFrame(loop); }
+  requestAnimationFrame(loop);
+
+  // initial placement and update
+  function init(){ resize(); syncWH(); player.x = W/2; player.y = H - 120; updatePowerUI(); }
+  init();
+
+  // mouse/desktop controls for shoot
+  window.addEventListener('mousedown', e=>{ if(e.button===0) keys['z']=true; }); window.addEventListener('mouseup', e=>{ keys['z']=false; });
+
+  // hook touch shoot state
+  setInterval(()=>{ // keep touchShoot value in keys as well for that part of code
+    if(touchShoot) keys['z']=true; else keys['z']=false;
+    if(keys['p']) usePower();
+  }, 50);
+
+  // update W/H on load
+  window.addEventListener('load', ()=>{ resize(); syncWH(); initStick(); });
+
+})();
+</script>
+</body>
+</html>
